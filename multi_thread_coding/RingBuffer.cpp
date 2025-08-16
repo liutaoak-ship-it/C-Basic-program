@@ -4,8 +4,10 @@
 #include<thread>
 #include<condition_variable>
 #include<atomic>
+#include<semaphore.h>
 
 using namespace std;
+#define MAX_SIZE 10000
 
 class RingBuffer {
 private:
@@ -92,20 +94,120 @@ public:
     }
 };
 
+class RingBufferForSem { //性能高，跨平台性差
+public:
+    RingBufferForSem(int size) : buffer(size), capacity(size) {
+        sem_init(&empty, 0, size); // 初始空闲空间=容量
+        sem_init(&full, 0, 0);     // 初始数据量=0
+        sem_init(&mutex, 0, 1);     // 二进制信号量作互斥锁
+    }
 
-int main() {
-    RingBufferOpt<int> buf(10);
+    void push(int data) {
+        sem_wait(&empty);  // 等待空闲空间
+        sem_wait(&mutex);  // 加锁
+        buffer[write_pos] = data;
+        write_pos = (write_pos + 1) % capacity;
+        sem_post(&mutex);  // 解锁
+        sem_post(&full);   // 增加数据量
+    }
+
+    int pop() {
+        sem_wait(&full);   // 等待数据
+        sem_wait(&mutex);
+        int data = buffer[read_pos];
+        read_pos = (read_pos + 1) % capacity;
+        sem_post(&mutex);
+        sem_post(&empty);  // 增加空闲空间
+        return data;
+    }
+
+private:
+    std::vector<int> buffer;
+    int capacity, read_pos = 0, write_pos = 0;
+    sem_t empty, full, mutex;
+};
+
+
+void testRingBuffer() {
+    RingBuffer rb(10);
     thread producer([&]{
-        for (int i = 0; i < 10; i++) buf.push(i);
-    });
-    thread consumer([&]{
-        for (int i = 0; i < 10; i++) {
-            int val;
-            buf.pop(val);
-            cout << val << " ";
+        for (int i = 0; i < MAX_SIZE; i++) {
+            rb.push(i);
+            // cout << "Produced: " << i << endl;
         }
-        cout << endl;
     });
+
+    thread consumer([&]{
+        for (int i = 0; i < MAX_SIZE; i++) {
+            int val = rb.pop();
+            // cout << "Consumed: " << val << endl;
+        }
+    });
+
     producer.join();
     consumer.join();
+}
+
+
+void testRingBufferOpt() {
+    RingBufferOpt<int> rb(10);
+    thread producer([&]{
+        for (int i = 0; i < MAX_SIZE; i++) {
+            rb.push(i);
+            // cout << "Produced: " << i << endl;
+        }
+        rb.stop(); // 停止生产
+    });
+
+    thread consumer([&]{
+        int val;
+        while (rb.pop(val)) {
+            // cout << "Consumed: " << val << endl;
+        }
+    });
+
+    producer.join();
+    consumer.join();
+}
+
+
+void testRingBufferForSem() {
+    RingBufferForSem rb(10);
+    thread producer([&]{
+        for (int i = 0; i < MAX_SIZE; i++) {
+            rb.push(i);
+            // cout << "Produced: " << i << endl;
+        }
+    });
+
+    thread consumer([&]{
+        for (int i = 0; i < MAX_SIZE; i++) {
+            int val = rb.pop();
+            // cout << "Consumed: " << val << endl;
+        }
+    });
+
+    producer.join();
+    consumer.join();
+}
+
+int main() {
+    // RingBufferOpt<int> buf(10);
+    RingBufferForSem buf(10);
+    auto start = chrono::high_resolution_clock::now();
+    testRingBuffer();
+    auto end = chrono::high_resolution_clock::now();
+    cout << "Time taken: " 
+         << chrono::duration_cast<chrono::microseconds>(end - start).count() 
+         << " microseconds" << endl;
+    testRingBufferOpt();
+    auto end1 = chrono::high_resolution_clock::now();
+    cout << "Time taken: " 
+         << chrono::duration_cast<chrono::microseconds>(end1 - end).count() 
+         << " microseconds" << endl;
+    testRingBufferForSem();
+    auto end2 = chrono::high_resolution_clock::now();
+    cout << "Time taken: " 
+         << chrono::duration_cast<chrono::microseconds>(end2 - end1).count() 
+         << " microseconds" << endl;
 }
